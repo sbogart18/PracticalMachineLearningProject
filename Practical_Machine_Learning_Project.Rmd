@@ -1,0 +1,94 @@
+---
+title: "Machine Learning Project"
+author: "Steven Bogart"
+date: "February 10, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background (verbatim from Coursera)
+
+```{r load_data}
+trainingAll <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", header = TRUE)
+```
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+
+## Data Cleaning
+
+```{r cleaning}
+trainingAllEdited <- trainingAll[, -(1:7)]
+trainingAllEdited <- trainingAllEdited[, !is.na(trainingAllEdited[1,]) & trainingAllEdited[1,] != ""]
+```
+
+The training dataset shows `r nrow(trainingAll)` instances of `r ncol(trainingAll)` variables.  However, the first seven variables are identifiers, timestamps, and other labels not useful for prediction.  Of the remaining variables, 100 have almost no measurements.  All these variables were removed before building a model, leaving `r ncol(trainingAllEdited)` variables -- one outcome, *classe*, and `r ncol(trainingAllEdited) - 1` regressors.  This final dataset had no missing data.
+
+## Training, Validation, Testing Datasets
+
+```{r partition}
+library(caret); library(kernlab)
+set.seed(12345)
+inTrain <- createDataPartition(y=trainingAllEdited$classe,
+                               p=0.75, list=FALSE)
+training <- trainingAllEdited[inTrain,]
+validation <- trainingAllEdited[-inTrain,]
+```
+
+The cleaned training set was separated at random into a smaller training dataset and a validation dataset.  The 
+smaller training set had 75% (or `r nrow(training)`) of the instances and the validation dataset had 25% (or `r nrow(validation)`) of the instances.  Coursera provided a test dataset with 20 instances missing the outcome values.  All models were built from the smaller training dataset and cross-validated with the validation dataset.
+
+## First Attempts at Models
+
+```{r first_models}
+modelTree <- train(classe ~ ., method = "rpart", data = training)
+predTree <- predict(modelTree, newdata = validation)
+sum(predTree == validation$classe) / nrow(validation)  
+
+modelLDA <- train(classe ~ ., method = "lda", data = training)
+predLDA <- predict(modelLDA, validation)
+sum(predLDA == validation$classe) / nrow(validation)    
+```
+
+
+I first tried modeling using a prediction tree (*method = "rpart"*).  The code ran quickly but only correctly predicted `r round(100*sum(predTree == validation$classe) / nrow(validation),0)`% of response values in the validation dataset.  Next I tried modeling with linear discriminant analysis (*method = "lda"*).  Again, the code ran quickly.  This model correctly predicted `r round(100*sum(predLDA == validation$classe) / nrow(validation),0)`% of response values in the validation dataset -- an improvement over the tree model, but not great.  I decided to try a random forest model (*method = "rf"*) but the code took so long to execute that I stopped it before it finished.
+
+## Final Model and Results
+
+```{r final_model, cache = TRUE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(3)
+registerDoParallel(cluster)
+fitControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+modelRF <- train(training[, -53], training[, 53], method = "rf", trControl = fitControl)
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+```{r final_accuracy}
+predRF <- predict(modelRF, validation)
+sum(predRF == validation$classe) / nrow(validation)    
+```
+
+Going back to the discussion boards on Coursera, I found the following article by mentor Len Greski explaining how to 
+set up a parallel implementation of random forest, thereby speeding up the code execution.
+
+https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md
+
+I adjusted the code for my random forest model to run in parallel, which ran in seven to eight minutes.  This model correctly predicted `r round(100*sum(predRF == validation$classe) / nrow(validation),1)`% of response values in the validation dataset.  From this, I estimate an out-of-sample error rate of `r round(100*(1 - sum(predRF == validation$classe) / nrow(validation)),1)`%.  The in-sample error rate was 0% as the model correctly predicted all response values in the training dataset.
+
+The predictions for the testing dataset were B A B A A E D B A A B C B A E E A B B B.  All of these were correct, 
+so the model correctly predicted 100% of the response values in the testing dataset.
+
+See below for details on the final random forest model and its error rates.
+
+```{r final_model_details}
+modelRF
+
+confusionMatrix(predRF, validation$classe)
+```
